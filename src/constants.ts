@@ -3,12 +3,13 @@ import type { GeminiModels } from './ai/geminiProvider';
 import type { OpenAIModels } from './ai/openaiProvider';
 import type { VSCodeAIModels } from './ai/vscodeProvider';
 import type { AnnotationStatus } from './annotations/annotationProvider';
-import type { FileAnnotationType, ViewShowBranchComparison } from './config';
+import type { ViewShowBranchComparison } from './config';
 import type { Environment } from './container';
 import type { StoredSearchQuery } from './git/search';
 import type { Subscription, SubscriptionPlanId, SubscriptionState } from './plus/gk/account/subscription';
+import type { SupportedCloudIntegrationIds } from './plus/integrations/authentication/models';
 import type { Integration } from './plus/integrations/integration';
-import type { IntegrationId, IssueIntegrationId } from './plus/integrations/providers/models';
+import type { IntegrationId } from './plus/integrations/providers/models';
 import type { TelemetryEventData } from './telemetry/telemetry';
 import type { TrackedUsage, TrackedUsageKeys } from './telemetry/usageTracker';
 
@@ -668,8 +669,6 @@ export type TreeViewNodeTypes =
 	| 'worktrees';
 
 export type ContextKeys = {
-	'gitlens:activeFileStatus': string;
-	'gitlens:annotationStatus': AnnotationStatus | `${AnnotationStatus}+${FileAnnotationType}`;
 	'gitlens:debugging': boolean;
 	'gitlens:disabled': boolean;
 	'gitlens:disabledToggleCodeLens': boolean;
@@ -689,6 +688,10 @@ export type ContextKeys = {
 	'gitlens:repos:withRemotes': string[];
 	'gitlens:repos:withHostingIntegrations': string[];
 	'gitlens:repos:withHostingIntegrationsConnected': string[];
+	'gitlens:tabs:annotated': string[];
+	'gitlens:tabs:annotated:computing': string[];
+	'gitlens:tabs:blameable': string[];
+	'gitlens:tabs:tracked': string[];
 	'gitlens:untrusted': boolean;
 	'gitlens:views:canCompare': boolean;
 	'gitlens:views:canCompare:file': boolean;
@@ -703,6 +706,7 @@ export type ContextKeys = {
 	'gitlens:views:pullRequest:visible': boolean;
 	'gitlens:views:repositories:autoRefresh': boolean;
 	'gitlens:vsls': boolean | 'host' | 'guest';
+	'gitlens:window:annotated': AnnotationStatus;
 } & Record<`gitlens:action:${string}`, number> &
 	Record<`gitlens:key:${Keys}`, boolean> &
 	Record<`gitlens:webview:${WebviewTypes | CustomEditorTypes}:visible`, boolean> &
@@ -846,12 +850,15 @@ export type Sources =
 	| 'notification'
 	| 'patchDetails'
 	| 'prompt'
+	| 'remoteProvider'
 	| 'settings'
 	| 'timeline'
 	| 'trial-indicator'
+	| 'scm-input'
 	| 'subscription'
 	| 'walkthrough'
-	| 'welcome';
+	| 'welcome'
+	| 'worktrees';
 
 export interface Source {
 	source: Sources;
@@ -877,6 +884,7 @@ export type SupportedAIModels =
 
 export type SecretKeys =
 	| `gitlens.integration.auth:${IntegrationId}|${string}`
+	| `gitlens.integration.auth.cloud:${IntegrationId}|${string}`
 	| `gitlens.${AIProviders}.key`
 	| `gitlens.plus.auth:${Environment}`;
 
@@ -1202,6 +1210,15 @@ export type TelemetryEvents = {
 		'activation.mode': string | undefined;
 	} & Record<`config.${string}`, string | number | boolean | null>;
 
+	/** Sent when explaining changes from wip, commits, stashes, patches,etc. */
+	'ai/explain': {
+		type: 'change';
+		changeType: 'wip' | 'stash' | 'commit' | `draft-${'patch' | 'stash' | 'suggested_pr_change'}`;
+	} & AIEventBase;
+
+	/** Sent when generating summaries from commits, stashes, patches, etc. */
+	'ai/generate': (AIGenerateCommitEvent | AIGenerateDraftEvent) & AIEventBase;
+
 	/** Sent when a cloud-based hosting provider is connected */
 	'cloudIntegrations/hosting/connected': {
 		'hostingProvider.provider': IntegrationId;
@@ -1224,7 +1241,7 @@ export type TelemetryEvents = {
 	};
 	/** Sent when a user chooses to manage the cloud integrations */
 	'cloudIntegrations/settingsOpened': {
-		'integration.id': IssueIntegrationId | undefined;
+		'integration.id': SupportedCloudIntegrationIds | undefined;
 	};
 
 	/** Sent when a code suggestion is archived */
@@ -1463,6 +1480,24 @@ export type TelemetryEvents = {
 			| 'integrations'
 			| 'more';
 	};
+};
+
+type AIEventBase = {
+	model: {
+		id: AIModels;
+		provider: { id: AIProviders; name: string };
+	};
+	duration?: number;
+	failed?: { reason: 'user-declined' | 'user-cancelled' } | { reason: 'error'; error: string };
+};
+
+export type AIGenerateCommitEvent = {
+	type: 'commitMessage';
+};
+
+export type AIGenerateDraftEvent = {
+	type: 'draftMessage';
+	draftType: 'patch' | 'stash' | 'suggested_pr_change';
 };
 
 export type LaunchpadTelemetryContext = LaunchpadEventData;

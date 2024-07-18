@@ -11,9 +11,13 @@ import { configuration } from '../../system/configuration';
 import { debug, log } from '../../system/decorators/log';
 import { take } from '../../system/event';
 import { filterMap, flatten } from '../../system/iterable';
+import { Logger } from '../../system/logger';
+import { getLogScope } from '../../system/logger.scope';
+import { openUrl } from '../../system/utils';
 import type { SubscriptionChangeEvent } from '../gk/account/subscriptionService';
 import type { IntegrationAuthenticationService } from './authentication/integrationAuthentication';
-import { supportedCloudIntegrationIds, toIntegrationId } from './authentication/models';
+import type { SupportedCloudIntegrationIds } from './authentication/models';
+import { isSupportedCloudIntegrationId, supportedCloudIntegrationIds, toIntegrationId } from './authentication/models';
 import type {
 	HostingIntegration,
 	Integration,
@@ -92,7 +96,7 @@ export class IntegrationService implements Disposable {
 			} else {
 				if (!isConnected) continue;
 
-				await integration.disconnect({ silent: true });
+				await integration.disconnect({ silent: true, cloudSessionOnly: true });
 			}
 		}
 	}
@@ -107,7 +111,12 @@ export class IntegrationService implements Disposable {
 		}
 	}
 
-	async manageCloudIntegrations(integrationId: IssueIntegrationId.Jira | undefined, source: Source | undefined) {
+	async manageCloudIntegrations(
+		connect: { integrationId: SupportedCloudIntegrationIds; skipIfConnected?: boolean } | undefined,
+		source: Source | undefined,
+	) {
+		const scope = getLogScope();
+		const integrationId = connect?.integrationId;
 		if (this.container.telemetry.enabled) {
 			this.container.telemetry.sendEvent(
 				'cloudIntegrations/settingsOpened',
@@ -121,12 +130,27 @@ export class IntegrationService implements Disposable {
 			if (!(await this.container.subscription.loginOrSignUp(true, source))) return;
 		}
 
+		if (integrationId && connect.skipIfConnected) {
+			await this.syncCloudIntegrations();
+			const integration = await this.container.integrations.get(integrationId);
+			const connected = integration.maybeConnected ?? (await integration.isConnected());
+			if (connected) return;
+		}
+
 		let query = 'source=gitlens';
 		if (integrationId != null) {
 			query += `&connect=${integrationId}`;
 		}
 
-		await env.openExternal(this.container.getGkDevUri('settings/integrations', query));
+		try {
+			const exchangeToken = await this.container.accountAuthentication.getExchangeToken();
+			await openUrl(
+				this.container.getGkDevExchangeUri(exchangeToken, `settings/integrations?${query}`).toString(true),
+			);
+		} catch (ex) {
+			Logger.error(ex, scope);
+			await env.openExternal(this.container.getGkDevUri('settings/integrations', query));
+		}
 		take(
 			window.onDidChangeWindowState,
 			2,
@@ -152,7 +176,7 @@ export class IntegrationService implements Disposable {
 		this._connectedCache.add(key);
 		if (this.container.telemetry.enabled) {
 			if (integration.type === 'hosting') {
-				if (supportedCloudIntegrationIds.includes(integration.id)) {
+				if (isSupportedCloudIntegrationId(integration.id)) {
 					this.container.telemetry.sendEvent('cloudIntegrations/hosting/connected', {
 						'hostingProvider.provider': integration.id,
 						'hostingProvider.key': key,
@@ -183,7 +207,7 @@ export class IntegrationService implements Disposable {
 		this._connectedCache.delete(key);
 		if (this.container.telemetry.enabled) {
 			if (integration.type === 'hosting') {
-				if (supportedCloudIntegrationIds.includes(integration.id)) {
+				if (isSupportedCloudIntegrationId(integration.id)) {
 					this.container.telemetry.sendEvent('cloudIntegrations/hosting/disconnected', {
 						'hostingProvider.provider': integration.id,
 						'hostingProvider.key': key,
@@ -425,6 +449,7 @@ export class IntegrationService implements Disposable {
 	async getMyPullRequests(
 		integrationIds?: HostingIntegrationId[],
 		cancellation?: CancellationToken,
+		silent?: boolean,
 	): Promise<IntegrationResult<SearchedPullRequest[] | undefined>> {
 		const integrations: Map<HostingIntegration, ResourceDescriptor[] | undefined> = new Map();
 		for (const integrationId of integrationIds?.length ? integrationIds : Object.values(HostingIntegrationId)) {
@@ -435,12 +460,13 @@ export class IntegrationService implements Disposable {
 		}
 		if (integrations.size === 0) return undefined;
 
-		return this.getMyPullRequestsCore(integrations, cancellation);
+		return this.getMyPullRequestsCore(integrations, cancellation, silent);
 	}
 
 	private async getMyPullRequestsCore(
 		integrations: Map<HostingIntegration, ResourceDescriptor[] | undefined>,
 		cancellation?: CancellationToken,
+		silent?: boolean,
 	): Promise<IntegrationResult<SearchedPullRequest[] | undefined>> {
 		const start = Date.now();
 
@@ -448,7 +474,7 @@ export class IntegrationService implements Disposable {
 		for (const [integration, repos] of integrations) {
 			if (integration == null) continue;
 
-			promises.push(integration.searchMyPullRequests(repos, cancellation));
+			promises.push(integration.searchMyPullRequests(repos, cancellation, silent));
 		}
 
 		const results = await Promise.allSettled(promises);
